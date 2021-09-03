@@ -54,6 +54,8 @@ type argumentList struct {
 	ControllerManagerEndpointURL string `help:"Set a custom endpoint URL for the kube-controller-manager endpoint."`
 	APIServerEndpointURL         string `help:"Set a custom endpoint URL for the API server endpoint."`
 	NetworkRouteFile             string `help:"Route file to get the default interface from. If left empty on Linux /proc/net/route will be used by default"`
+	DisableKubelet               bool   `default:"false" help:"Don't scrape kubelet"`
+	DisableControlplane          bool   `default:"false" help:"Don't scrape controlplane"`
 }
 
 const (
@@ -333,39 +335,47 @@ func main() {
 	}
 
 	podsFetcher := metric2.NewPodsFetcher(logger, kubeletClient, enableStaticPodsStatus).FetchFuncWithCache()
-	cpJobs, err := controlPlaneJobs(
-		logger,
-		apiServerClient,
-		nodeName,
-		timeout,
-		kubeletNodeIP,
-		podsFetcher,
-		k8s,
-		args.EtcdTLSSecretName,
-		args.EtcdTLSSecretNamespace,
-		args.APIServerSecurePort,
-		args.SchedulerEndpointURL,
-		args.EtcdEndpointURL,
-		args.ControllerManagerEndpointURL,
-		args.APIServerEndpointURL,
-	)
 
-	if err != nil {
-		logger.Errorf("couldn't configure control plane components jobs: %v", err)
+	if !args.DisableControlplane {
+		cpJobs, err := controlPlaneJobs(
+			logger,
+			apiServerClient,
+			nodeName,
+			timeout,
+			kubeletNodeIP,
+			podsFetcher,
+			k8s,
+			args.EtcdTLSSecretName,
+			args.EtcdTLSSecretNamespace,
+			args.APIServerSecurePort,
+			args.SchedulerEndpointURL,
+			args.EtcdEndpointURL,
+			args.ControllerManagerEndpointURL,
+			args.APIServerEndpointURL,
+		)
+
+		if err != nil {
+			logger.Errorf("couldn't configure control plane components jobs: %v", err)
+		} else {
+			jobs = append(jobs, cpJobs...)
+		}
 	} else {
-		jobs = append(jobs, cpJobs...)
+		logger.Info("Controlplane scraping disabled")
 	}
 
-	// Kubelet is always scraped, on each node
-	kubeletGrouper := kubelet.NewGrouper(
-		kubeletClient,
-		logger,
-		apiServerClient,
-		defaultNetworkInterface,
-		podsFetcher,
-		metric2.CadvisorFetchFunc(kubeletClient, metric.CadvisorQueries),
-	)
-	jobs = append(jobs, scrape.NewScrapeJob("kubelet", kubeletGrouper, metric.KubeletSpecs))
+	if !args.DisableKubelet {
+		kubeletGrouper := kubelet.NewGrouper(
+			kubeletClient,
+			logger,
+			apiServerClient,
+			defaultNetworkInterface,
+			podsFetcher,
+			metric2.CadvisorFetchFunc(kubeletClient, metric.CadvisorQueries),
+		)
+		jobs = append(jobs, scrape.NewScrapeJob("kubelet", kubeletGrouper, metric.KubeletSpecs))
+	} else {
+		logger.Info("Kubelet scraping disabled")
+	}
 
 	successfulJobs := 0
 	for _, job := range jobs {
